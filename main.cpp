@@ -1,5 +1,3 @@
-#include <windows.h>
-#include <psapi.h>
 #include <iostream>
 #include <vector>
 #include <set>
@@ -9,15 +7,14 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
-#include <regex>
-#include <codecvt>
+#include <limits>
 
 class ProcessClass {
 public:
 
     int pid;
-    int upper_memory_limit = 0;
-    int lower_memory_limit = MAXINT;
+    int upper_memory_limit = std::numeric_limits<int>::max();
+    int lower_memory_limit = 0;
 
     ProcessClass(int pid_) : pid(pid_){
     }
@@ -69,8 +66,97 @@ std::unordered_map<int, ProcessClass> monitoredProcesses;
 bool RUNNING = true;
 
 #ifdef __linux__
-//linux code goes here
+
+
+#include <dirent.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fstream>
+
+std::set<int> ProcessClass::GetAllSystemPIDs() {
+    DIR* dir;
+    struct dirent* ent;
+    std::set<int> pids;
+
+    if ((dir = opendir("/proc")) != nullptr) {
+        while ((ent = readdir(dir)) != nullptr) {
+            if (std::regex_match(ent->d_name, std::regex("[0-9]+"))) {
+                pids.insert(std::stoi(ent->d_name));
+            }
+        }
+        closedir(dir);
+    } else {
+        std::perror("Could not open /proc");
+    }
+
+    return pids;
+}
+
+bool ProcessClass::isAccessible() {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    return (access(path.c_str(), R_OK) != -1);
+}
+
+int ProcessClass::GetMemoryUsage() {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    std::ifstream file(path);
+    std::string line;
+    int mem = 0;
+    while (std::getline(file, line)) {
+        if (line.find("VmRSS:") != std::string::npos) {
+            std::istringstream iss(line);
+            std::string tmp;
+            iss >> tmp >> mem;
+            break;
+        }
+    }
+    return mem / 1024;  // Convert from KB to MB
+}
+
+int ProcessClass::GetMemoryUsage(int pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    std::ifstream file(path);
+    std::string line;
+    int mem = 0;
+    while (std::getline(file, line)) {
+        if (line.find("VmRSS:") != std::string::npos) {
+            std::istringstream iss(line);
+            std::string tmp;
+            iss >> tmp >> mem;
+            break;
+        }
+    }
+    return mem / 1024;  // Convert from KB to MB
+}
+
+std::string ProcessClass::GetName() {
+    std::string path = "/proc/" + std::to_string(pid) + "/cmdline";
+    std::ifstream file(path);
+    std::string name;
+    std::getline(file, name);
+    return name.empty() ? "UNKNOWN" : name;
+}
+
+std::string ProcessClass::GetName(int pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/cmdline";
+    std::ifstream file(path);
+    std::string name;
+    std::getline(file, name);
+    return name.empty() ? "UNKNOWN" : name;
+}
+
+void ProcessClass::Terminate() {
+    kill(pid, SIGTERM); // Sends the terminate signal to the process
+}
+
+
+
 #elif _WIN32
+
+#include <windows.h>
+#include <psapi.h>
+
+
 std::set<int> ProcessClass::GetAllSystemPIDs() {
     int pList[1024], pListBytesSize;
     std::set<int> pVector;
