@@ -9,96 +9,48 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
-
-#ifdef __linux__
-//linux code goes here
-#elif _WIN32
-// windows code goes here
-#else
-
-#endif
-
+#include <regex>
+#include <codecvt>
 
 class ProcessClass {
 public:
-    DWORD pid;
-    DWORD upper_memory_limit = 0;
-    DWORD lower_memory_limit = MAXDWORD;
 
-    ProcessClass(DWORD pid_) : pid(pid_){
+    int pid;
+    int upper_memory_limit = 0;
+    int lower_memory_limit = MAXINT;
+
+    ProcessClass(int pid_) : pid(pid_){
     }
 
     ProcessClass() {
         this->pid = 0;
     }
 
-    ProcessClass(DWORD pid_, DWORD lower, DWORD upper) : pid(pid_), lower_memory_limit(lower), upper_memory_limit(upper) {
+    ProcessClass(int pid_, int lower, int upper) : pid(pid_), lower_memory_limit(lower), upper_memory_limit(upper) {
     }
 
-    DWORD GetPid() {
+    int GetPid() {
         return pid;
     }
 
-    void SetLowerMemoryLimit(DWORD lower) {
+    void SetLowerMemoryLimit(int lower) {
         this->lower_memory_limit = lower;
     }
 
-    void SetUpperMemoryLimit(DWORD upper) {
+    void SetUpperMemoryLimit(int upper) {
         this->upper_memory_limit = upper;
     }
 
-    void SetMemoryLimits(DWORD lower, DWORD upper) {
+    void SetMemoryLimits(int lower, int upper) {
         this->lower_memory_limit = lower;
         this->upper_memory_limit = upper;
     }
 
-    bool isActive() {
-        HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
-        if (handle == NULL)
-            return 0;
-
-        DWORD exitcode = 0;
-        GetExitCodeProcess(handle, &exitcode);
-        CloseHandle(handle);
-        return exitcode == STILL_ACTIVE;
-    }
-
-    DWORD GetMemoryUsage() {
-        HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
-        if (handle == NULL)
-            return 0;
-        PROCESS_MEMORY_COUNTERS pmc;
-        DWORD memory;
-        if (GetProcessMemoryInfo(handle, &pmc, sizeof(pmc)) == NULL)
-            return 0;
-        memory = pmc.WorkingSetSize / (1024 * 1024); // шоб в мегабайтах а не в байтах
-        CloseHandle(handle);
-        return memory;
-    }
-
-    std::wstring GetName(DWORD pid) {
-        HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-        if (handle == NULL)
-            return L"";
-
-        std::wstring Name(MAX_PATH, L'\0');
-        DWORD length = K32GetModuleBaseNameW(handle, NULL, &Name[0], MAX_PATH);
-        CloseHandle(handle);
-
-        if (length == 0)
-            return L"";
-        else
-            return Name.substr(0, length); // Only keep the characters up to the actual length of the name
-    }
-
-
-    void Terminate() {
-        HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
-        if (handle == NULL)
-            return;
-        TerminateProcess(handle, 0);
-        CloseHandle(handle);
-    }
+    std::set<int> GetAllSystemPIDs();
+    bool isAccessible();
+    int GetMemoryUsage();
+    std::string GetName(int pid);
+    void Terminate();
 
     bool operator<(const ProcessClass& other) const {
         return pid < other.pid;
@@ -108,73 +60,303 @@ public:
         return pid == other.pid;
     }
 
-    friend std::wostream& operator<<(std::wostream& os, ProcessClass& pc) {
-        os << L"PID:\t" << pc.GetPid() << L"\tNAME:\t" << pc.GetName(pc.pid) << L" | MEM: " << pc.GetMemoryUsage() << L" MB";
-        return os;
-    }
+    int GetMemoryUsage(int pid);
 
-    std::wstring to_wstring() {
-        std::wstringstream ws;
-        ws << L"PID:\t" << GetPid() << L"\tNAME:\t" << GetName(this->pid) << L"  | MEM: " << GetMemoryUsage() << L" MB";
-        return ws.str();
-    }
-
-    static bool sortbysec(const std::pair<DWORD, ProcessClass>& a,
-                          const std::pair<DWORD, ProcessClass>& b)
-    {
-        return (a.first < b.first);
-    }
-
-
-    static std::vector<ProcessClass> GetProcessesList() {
-        DWORD pList[1024], pListBytesSize;
-        std::vector<ProcessClass> res;
-        std::vector<std::pair<DWORD, ProcessClass>> pVector;
-        if (!EnumProcesses(pList, sizeof(pList), &pListBytesSize))
-            return res;
-        DWORD pListSize = pListBytesSize / sizeof(DWORD);
-        for (DWORD i = 0; i < pListSize; ++i) {
-            DWORD pid = pList[i];
-            ProcessClass process(pid);
-            if (process.isActive()) {
-                pVector.push_back({ process.GetMemoryUsage(), process });
-            }
-        }
-
-        std::sort(pVector.begin(), pVector.end(), sortbysec);
-
-
-        for (const auto& i : pVector) {
-            res.emplace_back(i.second);
-        }
-        return res;
-    }
-
-    static std::set<DWORD> GetProcessIDs() {
-        DWORD pList[1024], pListBytesSize;
-        std::set<DWORD> pVector;
-        if (!EnumProcesses(pList, sizeof(pList), &pListBytesSize))
-            return pVector;
-        DWORD pListSize = pListBytesSize / sizeof(DWORD);
-        for (DWORD i = 0; i < pListSize; ++i) {
-            DWORD pid = pList[i];
-            pVector.insert(pid);
-        }
-    }
-
+    std::string GetName();
 };
 
-void PrintProcessesList(std::vector<ProcessClass>& pList) {
-    for (auto i : pList) {
-        std::wcout << i.to_wstring() << L"\n";
+std::unordered_map<int, ProcessClass> monitoredProcesses;
+bool RUNNING = true;
+
+#ifdef __linux__
+//linux code goes here
+#elif _WIN32
+std::set<int> ProcessClass::GetAllSystemPIDs() {
+    int pList[1024], pListBytesSize;
+    std::set<int> pVector;
+    if (!EnumProcesses(reinterpret_cast<DWORD *>(pList), sizeof(pList), reinterpret_cast<DWORD *>(&pListBytesSize)))
+        return pVector;
+    int pListSize = pListBytesSize / sizeof(int);
+    for (int i = 0; i < pListSize; ++i) {
+        int pid = pList[i];
+        pVector.insert(pid);
+    }
+    return pVector;
+}
+
+bool ProcessClass::isAccessible() {
+    HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
+    if (handle == nullptr)
+        return false;
+
+    int exitcode = 0;
+    GetExitCodeProcess(handle, reinterpret_cast<LPDWORD>(&exitcode));
+    CloseHandle(handle);
+    return exitcode == STILL_ACTIVE;
+}
+
+int ProcessClass::GetMemoryUsage() {
+    HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, this->pid);
+    if (handle == nullptr)
+        return 0;
+    PROCESS_MEMORY_COUNTERS pmc;
+    int memory;
+    if (GetProcessMemoryInfo(handle, &pmc, sizeof(pmc)) == NULL)
+        return 0;
+    memory = pmc.WorkingSetSize / (1024 * 1024); // шоб в мегабайтах а не в байтах
+    CloseHandle(handle);
+    return memory;
+}
+
+int ProcessClass::GetMemoryUsage(int pid) {
+    HANDLE handle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
+    if (handle == nullptr)
+        return 0;
+    PROCESS_MEMORY_COUNTERS pmc;
+    int memory;
+    if (GetProcessMemoryInfo(handle, &pmc, sizeof(pmc)) == NULL)
+        return 0;
+    memory = pmc.WorkingSetSize / (1024 * 1024); // шоб в мегабайтах а не в байтах
+    CloseHandle(handle);
+    return memory;
+}
+
+std::string ProcessClass::GetName() {
+    std::string name = "UNKNOWN";
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, this->pid);
+    if (hProcess != nullptr) {
+        char buffer[MAX_PATH] = { 0 };
+        if (GetProcessImageFileNameA(hProcess, buffer, MAX_PATH)) {
+            std::string fullPath(buffer);
+
+            size_t pos = fullPath.find_last_of("\\");
+            if (pos != std::string::npos) {
+                name = fullPath.substr(pos + 1);
+            }
+        }
+        CloseHandle(hProcess);
+    }
+    return name;
+}
+
+std::string ProcessClass::GetName(int pid) {
+    std::string name = "UNKNOWN";
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (hProcess != nullptr) {
+        char buffer[MAX_PATH] = { 0 };
+        if (GetProcessImageFileNameA(hProcess, buffer, MAX_PATH)) {
+            std::string fullPath(buffer);
+
+            size_t pos = fullPath.find_last_of("\\");
+            if (pos != std::string::npos) {
+                name = fullPath.substr(pos + 1);
+            }
+        }
+        CloseHandle(hProcess);
+    }
+    return name;
+}
+
+void ProcessClass::Terminate() {
+    HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+    if (handle == nullptr)
+        return;
+    TerminateProcess(handle, 0);
+    CloseHandle(handle);
+}
+
+
+#else
+
+#endif
+
+
+void PrintCMD() {
+    std::vector<std::string> text = {
+            "---**COMMANDS**---",
+            "add PID LOWER(MB) UPPER(MB)   |   start monitoring a process. LOWER and UPPER - memory limits",
+            "setupper PID MEM(MB)          |   set upper memory limit of a monitored process",
+            "setlower PID MEM(MB)          |   set lower memory limit of a monitored process",
+            "del PID                       |   stop monitoring a certain monitored process",
+            "info PID                      |   print pid, name and memory usage of a certain monitored process",
+            "infoall                       |   print pid, name and memory usage of all monitored processes",
+            "list                          |   just print a list of all processes",
+            "cmdlist                       |   just print a list of all commands (what you see rn)",
+            "exit                          |   exit the program"
+    };
+
+    std::cout << "\n";
+
+    for (auto const& i : text) {
+        std::cout << "\t|" + i + "\n";
     }
 }
 
-DWORD MonitorProcess(ProcessClass& process) {
-    if (!process.isActive())
+void PrintProcessesList() {
+    ProcessClass temp;
+    std::string tempname;
+    int tempmemory;
+    std::vector<std::pair<int, std::string>> processlist;
+
+    for (auto i : temp.GetAllSystemPIDs()) {
+        tempname = temp.GetName(i);
+        tempmemory = temp.GetMemoryUsage(i);
+        if (tempname != "UNKNOWN" && tempmemory != 0) {
+            processlist.push_back({tempmemory, std::to_string(i) + '\t' + temp.GetName(i) + " | MEM: " + std::to_string(temp.GetMemoryUsage(i)) + " MB\n"});
+        }
+    }
+
+    std::sort(processlist.begin(), processlist.end());
+
+    for (auto i : processlist) {
+        std::cout << i.second;
+    }
+}
+
+void HandleCommands() {
+    std::string input;
+
+    while (RUNNING) {
+        std::cout << "\n>";
+        std::getline(std::cin, input);
+        std::istringstream stream(input);
+        std::string cmd;
+        stream >> cmd;
+
+        if ("add" == cmd) {
+            int pid, lower, upper;
+            if (!(stream >> pid >> lower >> upper)) {
+                std::cerr << "Error: Incomplete 'add' command. Usage: add <pid> <lower> <upper>\n";
+                continue;
+            }
+            ProcessClass temp;
+            auto id = temp.GetAllSystemPIDs();
+            if (id.find(pid) == id.end()) {
+                std::cout << "Process " << pid << " not found.\n";
+                continue;
+            }
+
+            ProcessClass process(pid, lower, upper);
+
+            if (monitoredProcesses.find(pid) != monitoredProcesses.end()) {
+                std::cout << "Process " << pid << " is already being monitored.\n";
+            }
+            else {
+                monitoredProcesses.insert({ pid, process });
+                std::cout << "Process " << pid << " is now being monitored.\n";
+            }
+
+        }
+        else if ("setupper" == cmd) {
+            int pid, upper;
+            if (!(stream >> pid >> upper)) {
+                std::cerr << "Error: Incomplete 'setupper' command. Usage: setupper <pid> <upper>\n";
+                continue;
+            }
+
+            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
+                std::cout << "PID is not being monitored.\n";
+            }
+            else {
+                monitoredProcesses[pid].upper_memory_limit = upper;
+                std::cout << "Upper memory limit for process " << pid << " has been set to " << upper << "\n";
+            }
+
+        }
+        else if ("setlower" == cmd) {
+            int pid, lower;
+            if (!(stream >> pid >> lower)) {
+                std::cerr << "Error: Incomplete 'setlower' command. Usage: setlower <pid> <lower>\n";
+                continue;
+            }
+
+            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
+                std::cout << "PID is not being monitored.\n";
+            }
+            else {
+                monitoredProcesses[pid].lower_memory_limit = lower;
+                std::cout << "Lower memory limit for process " << pid << " has been set to " << lower << "\n";
+            }
+
+        }
+        else if ("del" == cmd) {
+            int pid;
+            if (!(stream >> pid)) {
+                std::cerr << "Error: Incomplete 'del' command. Usage: del <pid>\n";
+                continue;
+            }
+
+            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
+                std::cout << "PID is not being monitored.\n";
+            }
+            else {
+                monitoredProcesses.erase(pid);
+                std::cout << "Process " << pid << " is no longer being monitored\n";
+            }
+
+        }
+        else if ("info" == cmd) {
+            int pid;
+            if (!(stream >> pid)) {
+                std::cerr << "Error: Incomplete 'info' command. Usage: info <pid>\n";
+                continue;
+            }
+
+            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
+                std::cout << "PID is not being monitored.\n";
+            }
+            else {
+                ProcessClass temp;
+                std::cout << std::to_string(pid) + '\t' + temp.GetName(pid)
+                + " | MEM: " + std::to_string(temp.GetMemoryUsage(pid)) + " MB\t"
+                + " | LOWER: " + std::to_string(monitoredProcesses[pid].lower_memory_limit) + '\t'
+                + " | UPPER: " + std::to_string(monitoredProcesses[pid].upper_memory_limit) + '\n';
+            }
+
+        }
+        else if ("infoall" == cmd) {
+            if (monitoredProcesses.empty()) {
+                std::cout << "No processes are being monitored right now. use add <pid> <lower> <upper>\n";
+            }
+            ProcessClass temp;
+            for (auto i : monitoredProcesses) {
+//                std::cout << std::to_string(i.first) + '\t' + temp.GetName(i.first) + " | MEM: " +
+//                             std::to_string(temp.GetMemoryUsage(i.first)) + " MB\n";
+
+                std::cout << std::to_string(i.first) + '\t' + temp.GetName(i.first)
+                             + " | MEM: " + std::to_string(temp.GetMemoryUsage(i.first)) + " MB\t"
+                             + " | LOWER: " + std::to_string(monitoredProcesses[i.first].lower_memory_limit) + '\t'
+                             + " | UPPER: " + std::to_string(monitoredProcesses[i.first].upper_memory_limit) + '\n';
+            }
+        }
+        else if ("list" == cmd) {
+            PrintProcessesList();
+
+        }
+        else if ("cmdlist" == cmd) {
+            std::cout << "\n";
+            PrintCMD();
+            std::cout << "\n";
+
+        }
+        else if ("exit" == cmd) {
+            RUNNING = false;
+        }
+        else {
+            std::wcerr << "Invalid command.\n";
+            //&
+
+        }
+    }
+}
+
+int MonitorProcess(ProcessClass& process) {
+    if (!process.isAccessible())
         return process.GetPid();
-    DWORD memory = process.GetMemoryUsage();
-    DWORD pid = process.GetPid();
+    int memory = process.GetMemoryUsage();
+    int pid = process.GetPid();
     if (memory < process.lower_memory_limit || memory > process.upper_memory_limit) {
         process.Terminate();
         return pid;
@@ -182,19 +364,12 @@ DWORD MonitorProcess(ProcessClass& process) {
     return 0;
 }
 
-
-// опа, багатопоточечка
-
-bool RUNNING = true;
-
-std::unordered_map<DWORD, ProcessClass> monitoredProcesses;
-
 void MonitorProcesses() {
     while (RUNNING) {
-        std::vector<DWORD> toBeRemoved;
+        std::vector<int> toBeRemoved;
         for (auto& pair : monitoredProcesses) {
             auto& process = pair.second;
-            DWORD exitcode = MonitorProcess(process);
+            int exitcode = MonitorProcess(process);
 
             if (exitcode) {
                 toBeRemoved.push_back(exitcode);
@@ -210,166 +385,10 @@ void MonitorProcesses() {
 }
 
 
-
-
-void PrintCMD() {
-    std::vector<std::wstring> text = {
-            L"---**COMMANDS**---",
-            L"add PID LOWER(MB) UPPER(MB)   |   start monitoring a process. LOWER and UPPER - memory limits",
-            L"setupper PID MEM(MB)          |   set upper memory limit of a monitored process",
-            L"setlower PID MEM(MB)          |   set lower memory limit of a monitored process",
-            L"del PID                       |   stop monitoring a certain monitored process",
-            L"info PID                      |   print pid, name and memory usage of a certain monitored process",
-            L"infoall                       |   print pid, name and memory usage of all monitored processes",
-            L"list                          |   just print a list of all processes",
-            L"cmdlist                       |   just print a list of all commands (what you see rn)",
-            L"exit                          |   exit the program"
-    };
-
-    std::wcout << L"\n";
-
-    for (auto const& i : text) {
-        std::wcout << L"\t|" + i + L"\n";
-    }
-}
-
-
-void HandleCommands() {
-    std::wstring input;
-
-    while (RUNNING) {
-        std::getline(std::wcin, input);
-        std::wistringstream stream(input);
-        std::wstring cmd;
-        stream >> cmd;
-        std::wcout << L"\n>";
-        if (L"add" == cmd) {
-            DWORD pid, lower, upper;
-            if (!(stream >> pid >> lower >> upper)) {
-                std::wcerr << L"Error: Incomplete 'add' command. Usage: add <pid> <lower> <upper>\n";
-                continue;
-            }
-            auto id = ProcessClass::GetProcessIDs();
-            if (id.find(pid) == id.end()) {
-                std::wcout << L"Process " << pid << L" not found.\n";
-                continue;
-            }
-
-            ProcessClass process(pid, lower, upper);
-
-            if (monitoredProcesses.find(pid) != monitoredProcesses.end()) {
-                std::wcout << L"Process " << pid << L" is already being monitored.\n";
-            }
-            else {
-                monitoredProcesses.insert({ pid, process });
-                std::wcout << L"Process " << pid << L" is now being monitored.\n";
-            }
-
-        }
-        else if (L"setupper" == cmd) {
-            int pid, upper;
-            if (!(stream >> pid >> upper)) {
-                std::wcerr << L"Error: Incomplete 'setupper' command. Usage: setupper <pid> <upper>\n";
-                continue;
-            }
-
-            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
-                std::wcout << L"PID is not being monitored.\n";
-            }
-            else {
-                monitoredProcesses[pid].upper_memory_limit = upper;
-                std::wcout << L"Upper memory limit for process " << pid << L" has been set to " << upper << L"\n";
-            }
-
-        }
-        else if (L"setlower" == cmd) {
-            DWORD pid, lower;
-            if (!(stream >> pid >> lower)) {
-                std::wcerr << L"Error: Incomplete 'setlower' command. Usage: setlower <pid> <lower>\n";
-                continue;
-            }
-
-            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
-                std::wcout << L"PID is not being monitored.\n";
-            }
-            else {
-                monitoredProcesses[pid].lower_memory_limit = lower;
-                std::wcout << L"Lower memory limit for process " << pid << L" has been set to " << lower << L"\n";
-            }
-
-        }
-        else if (L"del" == cmd) {
-            DWORD pid;
-            if (!(stream >> pid)) {
-                std::wcerr << L"Error: Incomplete 'del' command. Usage: del <pid>\n";
-                continue;
-            }
-
-            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
-                std::wcout << L"PID is not being monitored.\n";
-            }
-            else {
-                monitoredProcesses.erase(pid);
-                std::wcout << L"Process " << pid << L" is no longer being monitored\n";
-            }
-
-        }
-        else if (L"info" == cmd) {
-            DWORD pid;
-            if (!(stream >> pid)) {
-                std::wcerr << L"Error: Incomplete 'info' command. Usage: info <pid>\n";
-                continue;
-            }
-
-            if (monitoredProcesses.find(pid) == monitoredProcesses.end()) {
-                std::wcout << L"PID is not being monitored.\n";
-            }
-            else {
-                std::wcout << monitoredProcesses[pid] << L"\n";
-            }
-
-        }
-        else if (L"infoall" == cmd) {
-            if (monitoredProcesses.empty()) {
-                std::wcout << L"No processes are being monitored right now. use add <pid> <lower> <upper>\n";
-            }
-            for (auto i : monitoredProcesses) {
-                std::wcout << i.second << L"\n";
-            }
-
-        }
-        else if (L"list" == cmd) {
-            auto list = ProcessClass::GetProcessesList();
-            PrintProcessesList(list);
-            std::wcout << L"\n>";
-
-        }
-        else if (L"cmdlist" == cmd) {
-            std::wcout << L"\n";
-            PrintCMD();
-            std::wcout << L"\n";
-            std::wcout << L"\n>";
-
-        }
-        else if (L"exit" == cmd) {
-            RUNNING = false;
-        }
-        else {
-            std::wcerr << L"Invalid command.\n";
-
-        }
-    }
-}
-
-
-
 int main()
 {
-
-    auto pl = ProcessClass::GetProcessesList();
-    PrintProcessesList(pl);
+    PrintProcessesList();
     PrintCMD();
-    std::wcout << L"\n>";
 
     std::thread monitor_thread(MonitorProcesses);
     std::thread command_thread(HandleCommands);
