@@ -130,19 +130,21 @@ int ProcessClass::GetMemoryUsage(int pid) {
 }
 
 std::string ProcessClass::GetName() {
-    std::string path = "/proc/" + std::to_string(pid) + "/cmdline";
+    std::string path = "/proc/" + std::to_string(pid) + "/comm";
     std::ifstream file(path);
     std::string name;
     std::getline(file, name);
-    return name.empty() ? "UNKNOWN" : name;
+    file.close();
+    return name;
 }
 
 std::string ProcessClass::GetName(int pid) {
-    std::string path = "/proc/" + std::to_string(pid) + "/cmdline";
+    std::string path = "/proc/" + std::to_string(pid) + "/comm";
     std::ifstream file(path);
     std::string name;
     std::getline(file, name);
-    return name.empty() ? "UNKNOWN" : name;
+    file.close();
+    return name;
 }
 
 void ProcessClass::Terminate() {
