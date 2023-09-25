@@ -85,10 +85,7 @@ std::set<int> ProcessClass::GetAllSystemPIDs() {
             }
         }
         closedir(dir);
-    } else {
-        std::perror("Could not open /proc");
     }
-
     return pids;
 }
 
@@ -110,7 +107,7 @@ int ProcessClass::GetMemoryUsage() {
             break;
         }
     }
-    return mem / 1024;  // Convert from KB to MB
+    return mem / 1024;
 }
 
 int ProcessClass::GetMemoryUsage(int pid) {
@@ -126,7 +123,7 @@ int ProcessClass::GetMemoryUsage(int pid) {
             break;
         }
     }
-    return mem / 1024;  // Convert from KB to MB
+    return mem / 1024;
 }
 
 std::string ProcessClass::GetName() {
@@ -148,7 +145,7 @@ std::string ProcessClass::GetName(int pid) {
 }
 
 void ProcessClass::Terminate() {
-    kill(pid, SIGTERM); // Sends the terminate signal to the process
+    kill(pid, SIGTERM);
 }
 
 
